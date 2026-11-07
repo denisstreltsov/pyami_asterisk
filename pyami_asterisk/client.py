@@ -23,6 +23,7 @@ class AMIClient:
                 reconnect_timeout (int): Reconnect timeout
                 reconnect_timeout_increase (int): Reconnect timeout increase
                 reconnect_timeout_max (int): Upper bound of the reconnect timeout (default: no bound)
+                login_timeout (int): Seconds to wait for the answer to Login (default 10)
                 buffer_limit (int): Read buffer size in bytes (default 64 KiB); longer packets are still read whole
                 ami_version (func): callback AMI version
         """
@@ -80,10 +81,17 @@ class AMIClient:
             self._connected = await self._open_connection()
             if not self._connected:
                 return
-            self._authenticated = await self._login()
+            self._connected_at = asyncio.get_running_loop().time()
+            try:
+                self._authenticated = await self._login()
+            except (asyncio.TimeoutError, asyncio.IncompleteReadError, asyncio.LimitOverrunError, OSError) as e:
+                # no answer or the connection dropped during login: a failed attempt, not a crash
+                self.log.warning(f"Login failed: {type(e).__name__}")
+                if not await self._connection_lost():
+                    return
+                continue
             if not self._authenticated:
                 return
-            self._connected_at = asyncio.get_running_loop().time()
             self._service_ping()
             await self._handler_tasks()
             await self._event_listener()
@@ -111,16 +119,23 @@ class AMIClient:
             "Username": self.config["username"],
             "Secret": self.config["secret"],
         })
-        data = await self._reader.readuntil(separator=EOL * 2)
-        if data.decode().split(EOL.decode())[1] == "Response: Success" and \
-                data.decode().split(EOL.decode())[-3] == "Message: Authentication accepted":
-            self.ami_version = data.decode().split(EOL.decode())[0]
-            if self.config.get('ami_version'):
-                self.config.get('ami_version')(dict(AMI_version=self.ami_version))
-            self._actions_ids.clear()
-            return True
-        self.log.error("Authentication failed")
-        return False
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + float(self.config.get("login_timeout", 10))
+        while True:
+            data = await asyncio.wait_for(self._read_packet(), max(deadline - loop.time(), 0))
+            if data.startswith(b"Asterisk Call Manager"):
+                banner, _, data = data.partition(EOL)
+                self.ami_version = banner.decode(errors="ignore")
+            response = _convert_bytes_to_dict(data)
+            if "Response" not in response:
+                continue  # an event or an empty packet before the answer
+            if response["Response"] == "Success":
+                if self.config.get('ami_version'):
+                    self.config.get('ami_version')(dict(AMI_version=self.ami_version))
+                self._actions_ids.clear()
+                return True
+            self.log.error(f"Authentication failed: {response.get('Message', '')}")
+            return False
 
     async def _actions_task_repeat(self, action: dict):
         while self._connected:

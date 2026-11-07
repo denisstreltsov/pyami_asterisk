@@ -31,9 +31,17 @@
 - A key or value containing CR or LF is refused with `ValueError` (in `create_action` and before anything is
   written): it could inject extra lines, even a whole action, into the packet.
 
+- The answer to `Login` is awaited with a timeout (`login_timeout`, 10 s); a silent PBX no longer hangs the
+  client forever.
+- A connection that drops or times out during login is a failed attempt retried after the usual pause; 1.5.2
+  raised `IncompleteReadError` out of `connect_ami()`. A refused login still stops, as in 1.5.2.
+- The banner and the login answer are parsed by fields, not by line positions; events before the answer are
+  skipped.
+
 ### Added
 
 - `reconnect_timeout_max`: upper bound of the pause grown by `reconnect_timeout_increase`.
+- `login_timeout`: seconds to wait for the answer to `Login` (default 10).
 - `buffer_limit`: read buffer size in bytes (default 64 KiB as in 1.5.2).
 
 ### Changed
