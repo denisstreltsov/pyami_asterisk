@@ -1,5 +1,6 @@
 import asyncio
 import contextlib
+import os
 import socket
 import sys
 from pathlib import Path
@@ -13,9 +14,16 @@ from pyami_asterisk import AMIClient
 from pyami_asterisk.utils import EOL, _convert_bytes_to_dict
 
 
-def read_fixture(name):
-    """Fixture bytes with CRLF line ends (the files themselves stay untouched)."""
-    return (parent / "fixtures" / name).read_bytes().replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
+def replace_EOL():
+    for _ in os.listdir(os.path.abspath(str(parent) + "/fixtures/")):
+        with open(str(parent) + "/fixtures/" + _, "rb") as f:
+            data = f.read().replace(b"\r\n", b"\n")
+            data = data.replace(b"\n", b"\r\n")
+        with open(str(parent) + "/fixtures/" + _, "wb") as f:
+            f.write(data)
+
+
+replace_EOL()
 
 
 class GenActions:
@@ -27,9 +35,9 @@ class GenActions:
         self.response = ""
 
     def get_gen(self):
-        with open(parent / "fixtures" / "actions.txt", "rb") as resp_file:
+        with open("tests/fixtures/actions.txt", "rb") as resp_file:
             response = b""
-            for resp in read_fixture("actions.txt").splitlines(keepends=True):
+            for resp in resp_file.readlines():
                 response += resp
                 if response.endswith(EOL * 2):
                     self.response = response.decode()
@@ -52,9 +60,9 @@ class GenActionsResponse:
         self.response = ""
 
     def get_gen(self):
-        with open(parent / "fixtures" / "actions_response.txt", "rb") as resp_file:
+        with open("tests/fixtures/actions_response.txt", "rb") as resp_file:
             response = b""
-            for resp in read_fixture("actions_response.txt").splitlines(keepends=True):
+            for resp in resp_file.readlines():
                 response += resp
                 if response.endswith(EOL * 2):
                     self.response = response.decode()
@@ -75,19 +83,17 @@ def unused_tcp_port_factory():
         return sock.getsockname()[1]
 
 
-open_writers = []
-
-
 async def handle_echo(reader, writer, stream=None):
-    open_writers.append(writer)
     data = await reader.readuntil(separator=EOL * 2)
     message = _convert_bytes_to_dict(data)
     if message['Action'] == 'Login':
         response = "Asterisk Call Manager/5.0.1\r\n".encode()
         if (message["Username"] == "valid_username" and message["Secret"] == "valid_password"):
-            response += read_fixture("login_ok.txt")
+            with open("tests/fixtures/login_ok.txt", "rb") as login_file:
+                response += login_file.read()
         else:
-            response += read_fixture("login_failed.txt")
+            with open("tests/fixtures/login_failed.txt", "rb") as login_fail_file:
+                response += login_fail_file.read()
         writer.write(response)
         await writer.drain()
 
@@ -104,10 +110,6 @@ async def _server(stream=None, **config):
     ami = AMIClient(**config)
     yield ami
     await ami.connection_close()
-    # Python 3.12+: wait_closed() waits for client connections, so close the server side too
-    for writer in open_writers:
-        writer.close()
-    open_writers.clear()
     server.close()
     await server.wait_closed()
 
