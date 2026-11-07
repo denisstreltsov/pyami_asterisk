@@ -1,24 +1,44 @@
-AsyncIO python library with Asterisk AMI
-========================================
+# pyami_asterisk (compatible fork)
 
-[![Build Status](https://travis-ci.com/streltsovdenis/pyami_asterisk.svg?branch=main)](https://travis-ci.com/streltsovdenis/pyami_asterisk)
-![PyPI](https://img.shields.io/pypi/v/pyami_asterisk)
-![PyPI - Downloads](https://img.shields.io/pypi/dm/pyami_asterisk?color=green)
-![PyPI - License](https://img.shields.io/pypi/l/pyami-asterisk?color=green)
+![tests](https://github.com/HSMM/pyami_asterisk/actions/workflows/tests.yml/badge.svg)
 
-Pyami_asterisk is a library based on python’s AsyncIO with Asterisk AMI
+An asyncio client for the Asterisk Manager Interface (AMI). This is a compatible fork of
+[denisstreltsov/pyami_asterisk](https://github.com/streltsovdenis/pyami_asterisk) by Denis Streltsov (MIT),
+last released upstream as 1.5.2. Russian version: [README.ru.md](README.ru.md).
 
-Install
--------
+The 1.5.2 public API and the private `_send_action(action, callback)` keep working; new behaviour is additive or
+opt-in (see [ADR 1](docs/adr/0001-compatible-fork.md)).
 
-Install pyami_asterisk
+## What the fork fixes
+
+Planned, tracked as issues:
+
+- Parsing and writing of AMI packets
+- Login: timeout, crash on a dropped login, and telling a refused login from a lost connection
+- Reconnect: one loop, no recursion, bounded pauses, no leaked sockets
+- Actions with an awaited answer, and no lost callbacks
+- Lifecycle inside a running event loop, injectable time, ordered events
+- Release 1.6.0
+
+Done so far: modern packaging, CI and a fake AMI server for tests.
+
+## Install
+
+The tag `v1.6.0` does not exist yet; until it is released, install from the repository:
 
 ```bash
-pip install pyami-asterisk
+pip install "pyami-asterisk @ git+https://github.com/HSMM/pyami_asterisk@v1.6.0"
 ```
 
-Usage
------
+## Development
+
+```bash
+uv venv --python 3.12 .venv
+uv pip install -e . --group dev
+.venv/bin/python -m pytest -q
+```
+
+## Usage
 
 Asterisk AMI Listen all Events
 
@@ -217,3 +237,7 @@ ami = AMIClient(host='127.0.0.1', port=5038, username='username', secret='passwo
 ami.register_event(["*"], all_events)
 asyncio.run(run_async())
 ```
+
+## Credits
+
+Based on [denisstreltsov/pyami_asterisk](https://github.com/streltsovdenis/pyami_asterisk) by Denis Streltsov (MIT).
