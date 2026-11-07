@@ -53,13 +53,13 @@ class FakeAmi:
     clients      writers of the connections that are logged in
     """
 
-    def __init__(self, username="user", secret="pass", banner=DEFAULT_BANNER, login="accept"):
+    def __init__(self, username="user", secret="pass", banner=DEFAULT_BANNER, login="accept", port=0):
         self.username = username
         self.secret = secret
         self.banner = banner
         self.login = login
         self.host = "127.0.0.1"
-        self.port = 0
+        self.port = port
         self.hangups = []
         self.replies = {"Ping": {"Ping": "Pong"}}
         self.received = []
@@ -70,7 +70,7 @@ class FakeAmi:
         self._server = None
 
     async def start(self):
-        self._server = await asyncio.start_server(self._serve, self.host, 0)
+        self._server = await asyncio.start_server(self._serve, self.host, self.port)
         self.port = self._server.sockets[0].getsockname()[1]
         return self
 

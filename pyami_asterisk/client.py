@@ -22,12 +22,14 @@ class AMIClient:
                 ping_delay (int): Ping delay
                 reconnect_timeout (int): Reconnect timeout
                 reconnect_timeout_increase (int): Reconnect timeout increase
+                reconnect_timeout_max (int): Upper bound of the reconnect timeout (default: no bound)
                 ami_version (func): callback AMI version
         """
         self.config = dict(self.defaults, **config)
-        self.ping_delay = int(self.config["ping_delay"])
-        self.reconnect_timeout = int(self.config["reconnect_timeout"])
-        self.reconnect_timeout_increase = int(self.config["reconnect_timeout_increase"])
+        self.ping_delay = float(self.config["ping_delay"])
+        self.reconnect_timeout = float(self.config["reconnect_timeout"])
+        self.reconnect_timeout_increase = float(self.config["reconnect_timeout_increase"])
+        self.reconnect_timeout_max = self.config.get("reconnect_timeout_max")
         self.log = config.get('log', log)
         self._reader = None
         self._writer = None
@@ -42,40 +44,54 @@ class AMIClient:
         self._actions_queue = asyncio.Queue()
         self._actions_repeat = False
         self._actions_repeat_connections_lost = []
+        self._closing = False
+        self._connected_at = 0.0
+        # Ping and repeated actions: they live as long as one connection and are cancelled when it ends
+        self._connection_tasks = set()
 
     async def _open_connection(self):
-        try:
-            connection = asyncio.open_connection(self.config["host"], self.config["port"])
-            self._reader, self._writer = await asyncio.wait_for(connection, timeout=5)
-        except (asyncio.TimeoutError, ConnectionRefusedError, OSError):
-            if self.reconnect_timeout == 0:
-                return False
-            self.log.warning(f"Connection failed ({self.config['host']}, {self.config['port']}), next connection "
-                             f"attempt in {self.reconnect_timeout} second(s)")
-            await asyncio.sleep(self.reconnect_timeout)
-            if self.reconnect_timeout_increase > 0:
-                self.reconnect_timeout += self.reconnect_timeout_increase
-            await self._open_connection()
-        if self.reconnect_timeout_increase > 0:
-            self.reconnect_timeout = int(self.config["reconnect_timeout"])
-        return True
+        """Open the TCP connection, retrying after ``reconnect_timeout`` until it succeeds or the client is closed."""
+        while not self._closing:
+            try:
+                connection = asyncio.open_connection(self.config["host"], self.config["port"])
+                self._reader, self._writer = await asyncio.wait_for(connection, timeout=5)
+            except (asyncio.TimeoutError, OSError):
+                if self.reconnect_timeout == 0:
+                    return False
+                self.log.warning(f"Connection failed ({self.config['host']}, {self.config['port']}), next connection "
+                                 f"attempt in {self.reconnect_timeout} second(s)")
+                await asyncio.sleep(self.reconnect_timeout)
+                if self.reconnect_timeout_increase > 0:
+                    self.reconnect_timeout += self.reconnect_timeout_increase
+                    if self.reconnect_timeout_max is not None:
+                        self.reconnect_timeout = min(self.reconnect_timeout, float(self.reconnect_timeout_max))
+                continue
+            self.reconnect_timeout = float(self.config["reconnect_timeout"])
+            return True
+        return False
 
     async def connect_ami(self):
-        self._connected = await self._open_connection()
-        if not self._connected:
-            return
-        self._authenticated = await self._login()
-        if not self._authenticated:
-            return
-        self._service_ping()
-        await self._handler_tasks()
-        await self._event_listener()
+        """Connect, log in and process AMI messages; a lost connection is re-established in this same loop."""
+        self._closing = False
+        while True:
+            self._connected = await self._open_connection()
+            if not self._connected:
+                return
+            self._authenticated = await self._login()
+            if not self._authenticated:
+                return
+            self._connected_at = asyncio.get_running_loop().time()
+            self._service_ping()
+            await self._handler_tasks()
+            await self._event_listener()
+            if not await self._connection_lost():
+                return
 
     async def _handler_tasks(self, action_in_callback: bool = False):
         if self._actions:
             for action in self._actions:
                 if action['repeat'] > 0 and not action_in_callback:
-                    asyncio.create_task(self._actions_task_repeat(action))
+                    self._spawn_connection_task(self._actions_task_repeat(action))
                     self._actions_repeat = True
                     self._actions_repeat_connections_lost.append(action)
                 else:
@@ -121,7 +137,7 @@ class AMIClient:
                     continue
                 if "Event: Shutdown".encode() in data:
                     self.log.warning("Asterisk is shutdown or restarted")
-                    await self._connection_lost()
+                    return
                 if "Response: Goodbye".encode() in data:
                     await self.connection_close()
 
@@ -148,9 +164,10 @@ class AMIClient:
                     self._data.put_nowait(_convert_bytes_to_dict(data))
                     asyncio.create_task(self._events_callbacks())
 
-            except (asyncio.IncompleteReadError, TimeoutError, RuntimeError, ConnectionResetError):
+            except (asyncio.IncompleteReadError, TimeoutError, RuntimeError, OSError):
                 if self._connected:
-                    await self._connection_lost()
+                    self.log.warning("AMI connection lost")
+                return
 
     async def _check_empty(self):
         if not self._patterns and not self._actions_ids and not self._actions_repeat:
@@ -191,33 +208,62 @@ class AMIClient:
         self._writer.write(_convert_dict_to_bytes(action))
         try:
             await self._writer.drain()
-        except ConnectionResetError:
-            await self._connection_lost()
+        except (ConnectionError, RuntimeError):
+            # closing the socket wakes the event listener, which hands over to the reconnect loop
+            self._writer.close()
 
     async def connection_close(self):
         """Close the connection"""
+        self._closing = True
         self._connected = False
+        self._cancel_connection_tasks()
         self._writer.close()
         self.log.warning('AMI connection close')
         await self._writer.wait_closed()
 
     def _service_ping(self):
         if self.ping_delay > 0:
-            asyncio.create_task(self._actions_task_repeat({'action': {"Action": "Ping"}, 'repeat': self.ping_delay}))
+            self._spawn_connection_task(
+                self._actions_task_repeat({'action': {"Action": "Ping"}, 'repeat': self.ping_delay}))
+
+    def _spawn_connection_task(self, coro):
+        task = asyncio.ensure_future(coro)
+        self._connection_tasks.add(task)
+        task.add_done_callback(self._connection_tasks.discard)
+        return task
+
+    def _cancel_connection_tasks(self):
+        for task in list(self._connection_tasks):
+            task.cancel()
+        self._connection_tasks.clear()
 
     async def _connection_lost(self):
+        """Clean up after the connection ended. True means: connect again."""
         self._connected = False
         self._authenticated = False
+        self._cancel_connection_tasks()
+        if self._actions_ids:
+            self.log.warning(f"Connection lost, dropping {len(self._actions_ids)} action(s) waiting for an answer")
+            self._actions_ids.clear()
+        if self._writer is not None:
+            self._writer.close()
+            try:
+                await self._writer.wait_closed()
+            except (OSError, RuntimeError):
+                pass
+        if self._closing or self.reconnect_timeout == 0:
+            return False
         if self._actions_repeat:
-            self._actions = self._actions_repeat_connections_lost.copy()
+            # resumed by _handler_tasks after the next login, exactly once each
+            self._actions = self._actions_repeat_connections_lost + self._actions
+            self._actions_repeat_connections_lost = []
             self._actions_repeat = False
-        restart_failed = await self.connect_ami()
-        if restart_failed is None:
-            if self.reconnect_timeout == 0:
-                await self.connection_close()
-                return
+        lived = asyncio.get_running_loop().time() - self._connected_at
+        if lived < self.reconnect_timeout:
+            # dropped soon after login: pause, so a PBX that drops at once does not get a tight loop
+            self.log.warning(f"AMI connection lost, next connection attempt in {self.reconnect_timeout} second(s)")
             await asyncio.sleep(self.reconnect_timeout)
-            await self._connection_lost()
+        return not self._closing
 
     def register_event(self, patterns: list, callbacks: object):
         for pattern in patterns:
