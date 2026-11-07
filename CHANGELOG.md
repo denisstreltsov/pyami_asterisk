@@ -26,6 +26,11 @@
   anywhere in the packet (the word `ActionID` in any value crashed the client with `KeyError`).
 - Packets longer than the read buffer are read whole; 1.5.2 broke the framing of the rest of the stream.
 
+- Non-string values in an action are written as text (`True`/`False` as `true`/`false`); 1.5.2 raised
+  `TypeError`. A `None` value leaves the key out.
+- A key or value containing CR or LF is refused with `ValueError` (in `create_action` and before anything is
+  written): it could inject extra lines, even a whole action, into the packet.
+
 ### Added
 
 - `reconnect_timeout_max`: upper bound of the pause grown by `reconnect_timeout_increase`.

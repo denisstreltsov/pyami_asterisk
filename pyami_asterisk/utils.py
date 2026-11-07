@@ -30,16 +30,30 @@ def _convert_bytes_to_dict(data: bytes) -> dict:
     return response
 
 
+def _to_text(value) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value)
+
+
 def _convert_dict_to_bytes(data: dict) -> bytes:
-    string = ""
-    for _, __ in data.items():
-        if isinstance(__, list):
-            for value in __:
-                string += _ + ": " + value + EOL.decode()
-        else:
-            string += _ + ": " + __ + EOL.decode()
-    string += EOL.decode()
-    return string.encode()
+    """Write an action as one AMI packet.
+
+    A list or tuple value is written as one line per item. Non-string values are written as text
+    (``True``/``False`` as ``true``/``false``); a ``None`` value leaves the key out. A key or value
+    containing CR or LF would inject extra lines into the packet and is refused with ``ValueError``.
+    """
+    lines = []
+    for key, value in data.items():
+        if value is None:
+            continue
+        key = _to_text(key)
+        for item in value if isinstance(value, (list, tuple)) else [value]:
+            item = _to_text(item)
+            if "\r" in key or "\n" in key or "\r" in item or "\n" in item:
+                raise ValueError(f"AMI action field {key!r} contains CR or LF")
+            lines.append(key + ": " + item + EOL.decode())
+    return ("".join(lines) + EOL.decode()).encode()
 
 
 class IdGenerator:

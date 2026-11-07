@@ -214,8 +214,9 @@ class AMIClient:
     async def _send_action(self, action: dict, callback: object = None):
         if "ActionID" not in action:
             action['ActionID'] = self._id_generator()
+        data = _convert_dict_to_bytes(action)  # ValueError before anything is registered or written
         self._actions_ids[action['ActionID']] = {'action': action, 'callback': callback, 'wait_next': False}
-        self._writer.write(_convert_dict_to_bytes(action))
+        self._writer.write(data)
         try:
             await self._writer.drain()
         except (ConnectionError, RuntimeError):
@@ -280,6 +281,7 @@ class AMIClient:
             self._patterns.append({pattern: callbacks})
 
     def create_action(self, action: dict, callback: object, repeat: int = False):
+        _convert_dict_to_bytes(action)  # refuse CR/LF injection here, not later inside connect_ami()
         self._actions.append({'action': action, 'callback': callback, 'repeat': repeat})
 
     def create_asyncio_task(self, tasks: list):
