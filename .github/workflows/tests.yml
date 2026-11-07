@@ -17,6 +17,6 @@ jobs:
       - uses: astral-sh/setup-uv@v5
         with:
           python-version: ${{ matrix.python-version }}
-      - run: uv venv
+      # setup-uv with python-version already creates and activates .venv
       - run: uv pip install -e . --group dev
       - run: uv run --no-sync pytest -q
