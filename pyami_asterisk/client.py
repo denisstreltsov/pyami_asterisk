@@ -1,6 +1,12 @@
 import asyncio
+import inspect
 from loguru import logger as log
 from .utils import _convert_dict_to_bytes, EOL, IdGenerator, _convert_bytes_to_dict
+
+
+def _is_true(value) -> bool:
+    """AMI booleans as Asterisk reads them: True, "true", "yes", "1", "on" ... in any case."""
+    return str(value).strip().lower() in ("true", "yes", "y", "t", "1", "on")
 
 
 class AMIClient:
@@ -50,6 +56,8 @@ class AMIClient:
         self._connected_at = 0.0
         # Ping and repeated actions: they live as long as one connection and are cancelled when it ends
         self._connection_tasks = set()
+        # callback and user tasks: kept referenced so the garbage collector cannot drop them mid-way
+        self._background_tasks = set()
         self._id_generator = IdGenerator('action')
 
     async def _open_connection(self):
@@ -110,7 +118,7 @@ class AMIClient:
             self._actions.clear()
         if self._asyncio_tasks:
             for task in self._asyncio_tasks:
-                asyncio.create_task(task)
+                self._spawn(task)
             self._asyncio_tasks.clear()
 
     async def _login(self):
@@ -162,10 +170,10 @@ class AMIClient:
                     if response['ActionID'] in self._actions_ids:
                         if self._actions_ids.get(response['ActionID']).get('callback') is not None:
                             self._actions_queue.put_nowait((self._actions_ids.get(response['ActionID']), response))
-                            asyncio.create_task(self._actions_callbacks())
+                            self._spawn(self._actions_callbacks())
                             if response.get('Message', '').endswith('successfully queued') \
-                                    and self._actions_ids.get(response['ActionID'])[
-                                        'action'].get('Async', "false") == 'true' \
+                                    and _is_true(self._actions_ids.get(response['ActionID'])[
+                                        'action'].get('Async', "false")) \
                                     or response.get('EventList', '') == 'start':
                                 self._actions_ids.get(response['ActionID'])['wait_next'] = True
                             elif response.get('Response') in ('Success', 'Error', 'Fail', 'Failure'):
@@ -178,7 +186,7 @@ class AMIClient:
 
                 if self._patterns:
                     self._data.put_nowait(message)
-                    asyncio.create_task(self._events_callbacks())
+                    self._spawn(self._events_callbacks())
 
             except (asyncio.IncompleteReadError, TimeoutError, RuntimeError, OSError):
                 if self._connected:
@@ -200,12 +208,18 @@ class AMIClient:
             self._connected = False
             await self.connection_close()
 
+    async def _call(self, callback, data):
+        """Call a sync or async callback; an exception is logged and does not stop the other callbacks."""
+        try:
+            result = callback(data)
+            if inspect.isawaitable(result):
+                await result
+        except Exception:
+            self.log.exception(f"Exception in callback {callback!r}")
+
     async def _actions_callbacks(self):
         action, response = await self._actions_queue.get()
-        if asyncio.iscoroutinefunction(action.get('callback')):
-            await action.get('callback')(response)
-        else:
-            action.get('callback')(response)
+        await self._call(action.get('callback'), response)
         self._actions_queue.task_done()
         await self._handler_tasks(action_in_callback=True)
         await self._check_empty()
@@ -213,18 +227,27 @@ class AMIClient:
     async def _events_callbacks(self):
         data = await self._data.get()
         for pattern in self._patterns:
-            if "*" == list(pattern.keys())[0]:
-                if asyncio.iscoroutinefunction(pattern.get("*")):
-                    await pattern.get("*")(data)
-                else:
-                    pattern.get("*")(data)
-            if "*" != list(pattern.keys())[0] and list(pattern.keys())[0] == data.get('Event'):
-                if asyncio.iscoroutinefunction(list(pattern.values())[0]):
-                    await list(pattern.values())[0](data)
-                else:
-                    list(pattern.values())[0](data)
+            (event, callback), = pattern.items()
+            if event == "*" or event == data.get('Event'):
+                await self._call(callback, data)
         self._data.task_done()
         await self._handler_tasks(action_in_callback=True)
+
+    def _spawn(self, coro):
+        task = asyncio.ensure_future(coro)
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_task_done)
+        return task
+
+    def _background_task_done(self, task):
+        self._background_tasks.discard(task)
+        if not task.cancelled() and task.exception() is not None:
+            error = task.exception()
+            exc_info = (type(error), error, error.__traceback__)
+            if hasattr(self.log, "opt"):  # loguru
+                self.log.opt(exception=exc_info).error("Exception in AMI task")
+            else:  # logging.Logger and alike
+                self.log.error("Exception in AMI task", exc_info=exc_info)
 
     async def _send_action(self, action: dict, callback: object = None):
         if "ActionID" not in action:
@@ -243,9 +266,14 @@ class AMIClient:
         self._closing = True
         self._connected = False
         self._cancel_connection_tasks()
+        if self._writer is None:
+            return
         self._writer.close()
         self.log.warning('AMI connection close')
-        await self._writer.wait_closed()
+        try:
+            await self._writer.wait_closed()
+        except (OSError, RuntimeError):
+            pass
 
     def _service_ping(self):
         if self.ping_delay > 0:

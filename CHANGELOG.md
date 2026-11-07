@@ -38,6 +38,13 @@
 - The banner and the login answer are parsed by fields, not by line positions; events before the answer are
   skipped.
 
+- An exception in a callback (event, action or a task from `create_asyncio_task`) is logged with its
+  traceback and the other callbacks still run; 1.5.2 lost it silently (`Task exception was never retrieved`).
+- Callback tasks are kept referenced, so the garbage collector cannot drop one mid-way.
+- `Async` of `Originate` is recognised as Asterisk reads it (`True`, `"True"`, `"yes"`, `"1"` ...); 1.5.2
+  only knew the string `"true"` and otherwise lost the `OriginateResponse`.
+- `connection_close()` is safe without a connection and when called twice.
+
 ### Added
 
 - `reconnect_timeout_max`: upper bound of the pause grown by `reconnect_timeout_increase`.
