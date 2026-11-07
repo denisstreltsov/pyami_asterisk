@@ -1,3 +1,0 @@
-pytest==6.2.5
-pytest-asyncio==0.16.0
-loguru==0.6.0
