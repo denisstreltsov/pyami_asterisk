@@ -30,6 +30,8 @@ class AMIClient:
                 reconnect_timeout_increase (int): Reconnect timeout increase
                 reconnect_timeout_max (int): Upper bound of the reconnect timeout (default: no bound)
                 login_timeout (int): Seconds to wait for the answer to Login (default 10)
+                ordered_events (bool): Call event callbacks one event after another, in arrival order
+                    (default False: each event is handled in its own task, as in 1.5.2)
                 buffer_limit (int): Read buffer size in bytes (default 64 KiB); longer packets are still read whole
                 ami_version (func): callback AMI version
         """
@@ -58,6 +60,7 @@ class AMIClient:
         self._connection_tasks = set()
         # callback and user tasks: kept referenced so the garbage collector cannot drop them mid-way
         self._background_tasks = set()
+        self._last_event_task = None
         self._id_generator = IdGenerator('action')
 
     async def _open_connection(self):
@@ -186,7 +189,10 @@ class AMIClient:
 
                 if self._patterns:
                     self._data.put_nowait(message)
-                    self._spawn(self._events_callbacks())
+                    if self.config.get("ordered_events"):
+                        self._last_event_task = self._spawn(self._ordered_events_callbacks(self._last_event_task))
+                    else:
+                        self._spawn(self._events_callbacks())
 
             except (asyncio.IncompleteReadError, TimeoutError, RuntimeError, OSError):
                 if self._connected:
@@ -232,6 +238,11 @@ class AMIClient:
                 await self._call(callback, data)
         self._data.task_done()
         await self._handler_tasks(action_in_callback=True)
+
+    async def _ordered_events_callbacks(self, previous):
+        if previous is not None and not previous.done():
+            await asyncio.wait([previous])
+        await self._events_callbacks()
 
     def _spawn(self, coro):
         task = asyncio.ensure_future(coro)

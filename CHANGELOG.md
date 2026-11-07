@@ -48,10 +48,15 @@
 ### Added
 
 - `reconnect_timeout_max`: upper bound of the pause grown by `reconnect_timeout_increase`.
+- `ordered_events=True`: event callbacks are called one event after another, in arrival order (by default
+  each event is still handled in its own task, as in 1.5.2, so callbacks of consecutive events interleave
+  once they await).
 - `login_timeout`: seconds to wait for the answer to `Login` (default 10).
 - `buffer_limit`: read buffer size in bytes (default 64 KiB as in 1.5.2).
 
 ### Changed
+
+- `loguru>=0.6.0` instead of the hard pin `loguru==0.6.0`.
 
 - `reconnect_timeout=0` means no reconnect at all; 1.5.2 made one immediate attempt before giving up.
 

@@ -12,7 +12,7 @@ setup(
     author_email='sdv.streltsov@gmail.com',
     url='https://github.com/streltsovdenis/pyami_asterisk.git',
     keywords=["AMI", "Asterisk", "asyncio", "python"],
-    install_requires=["loguru==0.6.0"],
+    install_requires=["loguru>=0.6.0"],
     license='MIT license',
     packages=find_packages(),
     long_description=long_description,
