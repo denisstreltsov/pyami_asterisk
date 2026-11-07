@@ -25,4 +25,4 @@
 
 ### Development
 
-- Fake AMI server for tests, `pytest>=8`, GitHub Actions on Python 3.8-3.13; Travis CI removed.
+- Fake AMI server for tests, `pytest>=8`, GitHub Actions on Python 3.10-3.14; Travis CI removed.
