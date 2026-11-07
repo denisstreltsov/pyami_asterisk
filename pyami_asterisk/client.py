@@ -23,6 +23,7 @@ class AMIClient:
                 reconnect_timeout (int): Reconnect timeout
                 reconnect_timeout_increase (int): Reconnect timeout increase
                 reconnect_timeout_max (int): Upper bound of the reconnect timeout (default: no bound)
+                buffer_limit (int): Read buffer size in bytes (default 64 KiB); longer packets are still read whole
                 ami_version (func): callback AMI version
         """
         self.config = dict(self.defaults, **config)
@@ -54,7 +55,8 @@ class AMIClient:
         """Open the TCP connection, retrying after ``reconnect_timeout`` until it succeeds or the client is closed."""
         while not self._closing:
             try:
-                connection = asyncio.open_connection(self.config["host"], self.config["port"])
+                connection = asyncio.open_connection(self.config["host"], self.config["port"],
+                                                     limit=int(self.config.get("buffer_limit", 2 ** 16)))
                 self._reader, self._writer = await asyncio.wait_for(connection, timeout=5)
             except (asyncio.TimeoutError, OSError):
                 if self.reconnect_timeout == 0:
@@ -129,20 +131,19 @@ class AMIClient:
     async def _event_listener(self):
         while self._connected:
             try:
-                try:
-                    data = await self._reader.readuntil(separator=EOL * 2)
-                except asyncio.LimitOverrunError as e:
-                    data = await self._reader.read(e.consumed) + await self._reader.readline()
+                data = await self._read_packet()
                 if data == "".encode():
                     continue
-                if "Event: Shutdown".encode() in data:
+                message = _convert_bytes_to_dict(data)
+                if message.get("Event") == "Shutdown":
                     self.log.warning("Asterisk is shutdown or restarted")
                     return
-                if "Response: Goodbye".encode() in data:
+                if message.get("Response") == "Goodbye":
                     await self.connection_close()
 
-                if "ActionID".encode() in data:
-                    response = _convert_bytes_to_dict(data)
+                action_id = message.get("ActionID")
+                if isinstance(action_id, str):
+                    response = message
                     if response['ActionID'] in self._actions_ids:
                         if self._actions_ids.get(response['ActionID']).get('callback') is not None:
                             self._actions_queue.put_nowait((self._actions_ids.get(response['ActionID']), response))
@@ -161,13 +162,23 @@ class AMIClient:
                         continue
 
                 if self._patterns:
-                    self._data.put_nowait(_convert_bytes_to_dict(data))
+                    self._data.put_nowait(message)
                     asyncio.create_task(self._events_callbacks())
 
             except (asyncio.IncompleteReadError, TimeoutError, RuntimeError, OSError):
                 if self._connected:
                     self.log.warning("AMI connection lost")
                 return
+
+    async def _read_packet(self) -> bytes:
+        """Read one packet (up to an empty line), also when it is longer than the read buffer."""
+        chunks = []
+        while True:
+            try:
+                chunks.append(await self._reader.readuntil(separator=EOL * 2))
+                return b"".join(chunks)
+            except asyncio.LimitOverrunError as e:
+                chunks.append(await self._reader.readexactly(e.consumed))
 
     async def _check_empty(self):
         if not self._patterns and not self._actions_ids and not self._actions_repeat:

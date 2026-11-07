@@ -4,16 +4,30 @@ EOL = b"\r\n"
 
 
 def _convert_bytes_to_dict(data: bytes) -> dict:
-    respons = {}
-    list_values = []
-    for _ in data.decode("utf-8", errors='ignore').split(EOL.decode()):
-        if _ != "":
-            if _.split(": ", 1)[0] in respons:
-                list_values.append(_.split(": ", 1)[1])
-                respons[_.split(": ", 1)[0]] = list_values
-                continue
-            respons[_.split(": ", 1)[0]] = _.split(": ", 1)[1]
-    return respons
+    """Parse one AMI packet into a dict.
+
+    A key repeated in the packet (``Variable``, ``Output``, ...) maps to a list of all its values in
+    order; other keys map to a string. A value containing ``": "`` is kept whole. A line without
+    ``": "`` is a key with an empty value when it is ``Key:``, otherwise it is raw text (as in the answer
+    to a legacy ``Command`` action) and is collected under ``Output``.
+    """
+    response = {}
+    for line in data.decode("utf-8", errors='ignore').split(EOL.decode()):
+        if line == "":
+            continue
+        key, sep, value = line.partition(": ")
+        if not sep:
+            if line.endswith(":") and " " not in line:
+                key, value = line[:-1], ""
+            else:
+                key, value = "Output", line
+        if key not in response:
+            response[key] = value
+        elif isinstance(response[key], list):
+            response[key].append(value)
+        else:
+            response[key] = [response[key], value]
+    return response
 
 
 def _convert_dict_to_bytes(data: dict) -> bytes:

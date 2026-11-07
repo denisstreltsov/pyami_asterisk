@@ -18,9 +18,18 @@
 - `IdGenerator` no longer keeps every instance in the class-level `instances` list; the client uses one
   generator. 1.5.2 leaked one object per action, Ping included (~17 000 a day with the default `ping_delay`).
 
+- A key repeated in a packet keeps every value in order; 1.5.2 lost the first one and mixed the values of
+  different repeated keys into one shared list.
+- A line without `": "` no longer crashes the parser: `Key:` is an empty value, raw text (legacy `Command`
+  output) is collected under `Output`.
+- `ActionID`, `Event: Shutdown` and `Response: Goodbye` are recognised by parsed fields, not by a substring
+  anywhere in the packet (the word `ActionID` in any value crashed the client with `KeyError`).
+- Packets longer than the read buffer are read whole; 1.5.2 broke the framing of the rest of the stream.
+
 ### Added
 
 - `reconnect_timeout_max`: upper bound of the pause grown by `reconnect_timeout_increase`.
+- `buffer_limit`: read buffer size in bytes (default 64 KiB as in 1.5.2).
 
 ### Changed
 
