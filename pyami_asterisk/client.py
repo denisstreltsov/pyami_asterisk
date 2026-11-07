@@ -48,6 +48,7 @@ class AMIClient:
         self._connected_at = 0.0
         # Ping and repeated actions: they live as long as one connection and are cancelled when it ends
         self._connection_tasks = set()
+        self._id_generator = IdGenerator('action')
 
     async def _open_connection(self):
         """Open the TCP connection, retrying after ``reconnect_timeout`` until it succeeds or the client is closed."""
@@ -120,9 +121,8 @@ class AMIClient:
         return False
 
     async def _actions_task_repeat(self, action: dict):
-        generator = IdGenerator('action')
         while self._connected:
-            action.get('action')['ActionID'] = generator()
+            action.get('action')['ActionID'] = self._id_generator()
             await self._send_action(action.get('action'), action.get('callback'))
             await asyncio.sleep(action.get('repeat'))
 
@@ -202,8 +202,7 @@ class AMIClient:
 
     async def _send_action(self, action: dict, callback: object = None):
         if "ActionID" not in action:
-            action_id_generator = IdGenerator('action')
-            action['ActionID'] = action_id_generator()
+            action['ActionID'] = self._id_generator()
         self._actions_ids[action['ActionID']] = {'action': action, 'callback': callback, 'wait_next': False}
         self._writer.write(_convert_dict_to_bytes(action))
         try:

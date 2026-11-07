@@ -15,6 +15,9 @@
 - After a connection that dropped sooner than `reconnect_timeout` the client pauses before reconnecting,
   so a PBX that drops right after login does not get a tight loop.
 
+- `IdGenerator` no longer keeps every instance in the class-level `instances` list; the client uses one
+  generator. 1.5.2 leaked one object per action, Ping included (~17 000 a day with the default `ping_delay`).
+
 ### Added
 
 - `reconnect_timeout_max`: upper bound of the pause grown by `reconnect_timeout_increase`.

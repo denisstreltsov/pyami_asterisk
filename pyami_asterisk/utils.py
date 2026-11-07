@@ -31,10 +31,10 @@ def _convert_dict_to_bytes(data: dict) -> bytes:
 class IdGenerator:
     """Generate some uuid for actions:"""
 
+    # 1.5.2 appended every instance here and never freed them; kept (empty) for compatibility
     instances = []
 
     def __init__(self, prefix):
-        self.instances.append(self)
         self.prefix = prefix
         self.uid = str(uuid.uuid4())
         self.generator = self.get_generator()
